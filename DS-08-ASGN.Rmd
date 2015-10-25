@@ -1,0 +1,210 @@
+---
+title: "DS-08-ASGN"
+author: "Rick Hubbard"
+date: "October 25, 2015"
+output: html_document
+---
+
+# Practical Machine Learning Course Project
+## Rick Hubbard (25 Oct 2015)
+
+# Abstract
+The purpose of this investigation is to apply a group of machine learning methods to a common problem set (exercise physiology) to determine which of the chosen methods has the greatest accuracy in predicting a style of exercising with respect to approximately 53 motion-related variables.
+
+(Note: Housekeeping matters--such as loading R Packages--not shown in this report for readability and space saving purposes.)
+
+```{r housekeeping, echo = FALSE, message = FALSE, results = 'hide'}
+set.seed(1701)
+
+packageR <- function(pkg){
+  if (!require(pkg,character.only = TRUE)){
+    install.packages(pkg,dep=TRUE)
+    if(!require(pkg,character.only = TRUE)) {
+      stop("Package not found")
+    } else {
+      library(pkg,character.only=TRUE)
+    }
+  }
+}
+
+pathR <- function(machine,directory){
+  machine.path <- "/Users/rick/Dropbox/Data-Science/Coursera/"
+  if(machine != "iMac"){
+    machine.path <- "/Users/Rick/Dropbox/Data-Science/Coursera/"
+  }
+  paste(machine.path,directory,sep="")
+}
+
+pml_write_files <- function(x) {  
+  n <- length(x)  
+  for(i in 1:n) {  
+    filename <- paste0("problem_id_", i, ".txt")  
+    write.table(x[i], file=filename, quote=F, row.names=F, col.names=F)  
+  }  
+}  
+
+packageR("datasets")
+packageR("caret")
+packageR("randomForest")
+packageR("rpart")
+packageR("AppliedPredictiveModeling")
+packageR("ProjectTemplate")
+packageR("ggplot2")
+packageR("ggthemes")
+packageR("RColorBrewer")
+packageR("survival")
+packageR("GGally")
+packageR("cowplot")
+packageR("lattice")
+packageR("scales")
+packageR("rmarkdown")
+packageR("splines")
+packageR("data.table")
+packageR("sqldf")
+packageR("plyr")
+packageR("dplyr")
+packageR("MASS")
+packageR("lubridate")
+packageR("sqldf")
+packageR("Hmisc")
+packageR("gbm")
+
+getwd()
+directory <- "DS-08-Machine-Learning"
+working.directory <- pathR('iMac',directory)
+setwd(working.directory) ## Make it so, Number One (set the Working Directory to the applicable path for current machine)
+getwd()
+
+```
+
+## Data Acquisition
+
+The dataset(s) used in this investigation were compiled by the "HAR" (Human Activity Recognition) project, whose generous allowance of the use of their data and other findings is acknowledged and appreciated (see: http://groupware.les.inf.puc-rio.br/har).
+
+HAR's "training" and "test" datasets were obtained and uploaded into RStudio (version 0.99.486); as shown here:
+
+```{r acquire_data, echo = TRUE}
+# Create Data Directory
+if(!file.exists("./Data")){
+  dir.create("./Data")
+}
+
+# Acquire Training data:
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+if(!file.exists("./Data/pml-training.csv")){
+  download.file(fileURL, destfile = "./Data/pml-training.csv", method = "curl")
+}
+
+# Acquire Test data
+fileURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+if(!file.exists("./Data/pml-testing.csv")){
+  download.file(fileURL, destfile = "./Data/pml-testing.csv", method = "curl")
+}
+```
+
+After uploading the datasets into RStudio, they were examined using a combination of Exploratory Data Analysis methods (e.g., sums, averages), as well as visual inspection for values such as "NA" and "#DIV/0!". Based on these evaluations, both the training and test datasets were modified to facilitate subsequent analysis.
+
+```{r data_wrangling, echo = TRUE}
+
+# Load & Wrangle Data 
+pml.TrainR <- read.csv("./Data/pml-training.csv",na.strings=c("NA","","#DIV/0!"),header=TRUE)
+pml.TestR <- read.csv("./Data/pml-testing.csv",na.strings=c("NA","","#DIV/0!"),header=TRUE)
+
+# Exclude Superfluous Variables (X:num_window)
+pml.TrainR <- pml.TrainR[,-c(1:7)]
+pml.TestR <- pml.TestR[,-c(1:7)]
+
+NA.zero.cutoff <- 0.93
+
+# Shape Training Dataset to be useful
+# Remove Columns which contains more than NA.zero.cutoff NAs
+pml.TrainR <- pml.TrainR[,colSums(is.na(pml.TrainR)) < (nrow(pml.TrainR) * NA.zero.cutoff)]
+# Remove Columns which contains more than NA.zero.cutoff Empty Cells
+pml.TrainR <- pml.TrainR[,colSums(pml.TrainR == "") < (nrow(pml.TrainR) * NA.zero.cutoff)]
+# Confirm Dataset Dimensions
+dim(pml.TrainR)
+
+# Evaluate "TrainR" (Training) Dataset for Presence of Near Zero Variance Predictors
+train.near.zero <- sum(nearZeroVar(pml.TrainR, saveMetrics = TRUE)[, 3])
+```
+
+## Training and Test Datasets
+
+Because there were no "NZV" (Near Zero Value) results, then the capabilities of R's "caret" package were used and the HAR training dataset was partitioned into "train" and "test" subsets. (Apologies for the namespace overloading!)
+
+```{r partition_data, echo = TRUE}
+train.idx <- createDataPartition(y = pml.TrainR$classe, p = 0.7, list = FALSE)
+train.part <- pml.TrainR[train.idx, ]
+test.part <- pml.TrainR[-train.idx, ]
+```
+
+# Generate Candidate Models
+
+Three machine learning methods were chosen as candidates for this investigation; specifically: Decision Trees, Linear Discriminate Analysis, and Random Forest. 
+
+For each of the three methods, the "train" partition. of the HAR provided dataset was used to generate ("fit") a model. Then the fitted model was applied to the "test" partition to gauge accuracy and Out-of-Sample error rates.
+
+```{r generate_models, echo = TRUE}
+# Generate Models
+# Decision Trees
+model.DTree <- train(classe ~ ., data = train.part, method = "rpart")
+predict.DTree <- predict(model.DTree, newdata = test.part)
+cM.DTree <- confusionMatrix(data = predict.DTree, test.part$classe)
+cM.DTree.accuracy <- cM.DTree$overall[1]
+
+# Linear Discriminate Analysis
+model.LDA <- train(classe ~ ., data = train.part, method = "lda")
+predict.LDA <- predict(model.LDA, newdata = test.part)
+cM.LDA <- confusionMatrix(data = predict.LDA, test.part$classe)
+cM.LDA.accuracy <- cM.LDA$overall[1]
+
+# Random Forest
+model.RF <- randomForest(classe ~., data = train.part)
+predict.RF <- predict(model.RF, newdata = test.part)
+cM.RF <- confusionMatrix(data = predict.RF, test.part$classe)
+cM.RF.accuracy <- cM.RF$overall[1]
+```
+
+## Validity Assessment
+
+Once the models were generated and tested, then their overall accuracy and Out-of-Sample error rates were evaluated.
+
+```{r analyze_model_validity, echo = TRUE, message = TRUE}
+# Analysis of Model "Accuracy" Results
+cM.DTree.accuracy
+cM.LDA.accuracy
+cM.RF.accuracy
+
+# Compute Out-of-Sample Error Rates
+OOS.DTree <- 1 - cM.DTree.accuracy
+OOS.LDA <- 1 - cM.LDA.accuracy
+OOS.RF <- 1 - cM.RF.accuracy
+
+OOS.DTree
+OOS.LDA
+OOS.RF
+```
+
+Overall, the Random Forest approach had the highest degree of Accuracy (`r cM.RF.accuracy`)...and the lowest degree of Out-of-Sample error rate (`r OOS.RF`).
+
+```{r plot_RF_OOS, echo = FALSE, message = TRUE}
+plot(model.RF, main = "Random Forest Error Rate as a Function of Number of Generated Trees")
+```
+
+# Final Prediction 
+
+The last step in this investigation was to apply the fitted models to the original HAR-provided "Test" dataset (again, apologies for namespace overloading!).
+
+```{r apply_model_to_test_dataset, echo = TRUE}
+# Analysis of RF on Test Data
+final.result <- predict(model.RF, newdata = pml.TestR)
+final.result
+
+# Write Prediction Files for Submission
+fr.output <- as.character(final.result)
+pml_write_files(fr.output)
+```
+
+
+
+
